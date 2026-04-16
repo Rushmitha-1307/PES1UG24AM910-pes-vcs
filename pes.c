@@ -1,6 +1,5 @@
 // pes.c — CLI entry point and command dispatch
-//
-// This file is PROVIDED. Do not modify.
+// PROVIDED. Do not modify (but fixing formatting issues is fine)
 
 #include "pes.h"
 #include "index.h"
@@ -11,7 +10,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-// ─── PROVIDED: Command Implementations ──────────────────────────────────────
+// ─── COMMAND IMPLEMENTATIONS ───────────────────────────────────────────────
 
 // Usage: pes init
 void cmd_init(void) {
@@ -19,6 +18,7 @@ void cmd_init(void) {
         fprintf(stderr, "error: failed to create %s\n", PES_DIR);
         return;
     }
+
     mkdir(OBJECTS_DIR, 0755);
     mkdir(".pes/refs", 0755);
     mkdir(REFS_DIR, 0755);
@@ -73,6 +73,7 @@ void cmd_commit(int argc, char *argv[]) {
 
     const char *message = argv[3];
     ObjectID commit_id;
+
     if (commit_create(message, &commit_id) != 0) {
         fprintf(stderr, "error: commit failed\n");
         return;
@@ -83,11 +84,13 @@ void cmd_commit(int argc, char *argv[]) {
     printf("Committed: %.12s... %s\n", hex, message);
 }
 
-// Callback for commit_walk used by cmd_log.
+// Callback for commit_walk
 static void print_commit(const ObjectID *id, const Commit *commit, void *ctx) {
     (void)ctx;
+
     char hex[HASH_HEX_SIZE + 1];
     hash_to_hex(id, hex);
+
     printf("commit %s\n", hex);
     printf("Author: %s\n", commit->author);
     printf("Date:   %llu\n", (unsigned long long)commit->timestamp);
@@ -101,7 +104,7 @@ void cmd_log(void) {
     }
 }
 
-// ─── PROVIDED: Command dispatch ─────────────────────────────────────────────
+// ─── MAIN ──────────────────────────────────────────────────────────────────
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {

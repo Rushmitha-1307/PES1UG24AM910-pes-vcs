@@ -17,6 +17,8 @@ typedef struct {
     char message[4096];     // Commit message
 } Commit;
 
+typedef void (*commit_cb)(const ObjectID *, const Commit *, void *);
+
 // Create a commit from the current index.
 //   1. Build a tree from the index (using tree_from_index)
 //   2. Read current HEAD as the parent (may not exist for first commit)

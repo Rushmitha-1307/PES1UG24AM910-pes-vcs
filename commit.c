@@ -33,74 +33,88 @@ int object_read(const ObjectID *id, ObjectType *type_out, void **data_out, size_
 
 // Parse raw commit data into a Commit struct.
 int commit_parse(const void *data, size_t len, Commit *commit_out) {
-    (void)len;
-    const char *p = (const char *)data;
-    char hex[HASH_HEX_SIZE + 1];
+    memset(commit_out, 0, sizeof(Commit));
 
-    // "tree <hex>\n"
-    if (sscanf(p, "tree %64s\n", hex) != 1) return -1;
-    if (hex_to_hash(hex, &commit_out->tree) != 0) return -1;
-    p = strchr(p, '\n') + 1;
+    const char *ptr = (const char *)data;
+    const char *end = ptr + len;
 
-    // optional "parent <hex>\n"
-    if (strncmp(p, "parent ", 7) == 0) {
-        if (sscanf(p, "parent %64s\n", hex) != 1) return -1;
-        if (hex_to_hash(hex, &commit_out->parent) != 0) return -1;
-        commit_out->has_parent = 1;
-        p = strchr(p, '\n') + 1;
-    } else {
-        commit_out->has_parent = 0;
+    char line[512];
+
+    while (ptr < end) {
+        int i = 0;
+
+        // read one line
+        while (ptr < end && *ptr != '\n' && i < sizeof(line) - 1) {
+            line[i++] = *ptr++;
+        }
+        line[i] = '\0';
+
+        ptr++; // skip '\n'
+
+        // blank line → next is message
+        if (i == 0) {
+            size_t msg_len = end - ptr;
+            if (msg_len >= sizeof(commit_out->message))
+                msg_len = sizeof(commit_out->message) - 1;
+
+            memcpy(commit_out->message, ptr, msg_len);
+            commit_out->message[msg_len] = '\0';
+            break;
+        }
+
+        if (strncmp(line, "tree ", 5) == 0) {
+            hex_to_hash(line + 5, &commit_out->tree);
+        }
+        else if (strncmp(line, "parent ", 7) == 0) {
+            hex_to_hash(line + 7, &commit_out->parent);
+            commit_out->has_parent = 1;
+        }
+        else if (strncmp(line, "author ", 7) == 0) {
+            snprintf(commit_out->author, sizeof(commit_out->author), "%s", line + 7);
+        }
+        else if (strncmp(line, "time ", 5) == 0) {
+            commit_out->timestamp = strtoull(line + 5, NULL, 10);
+        }
     }
 
-    // "author <name> <timestamp>\n"
-    char author_buf[256];
-    uint64_t ts;
-    if (sscanf(p, "author %255[^\n]\n", author_buf) != 1) return -1;
-    // split off trailing timestamp
-    char *last_space = strrchr(author_buf, ' ');
-    if (!last_space) return -1;
-    ts = (uint64_t)strtoull(last_space + 1, NULL, 10);
-    *last_space = '\0';
-    snprintf(commit_out->author, sizeof(commit_out->author), "%s", author_buf);
-    commit_out->timestamp = ts;
-    p = strchr(p, '\n') + 1;  // skip author line
-    p = strchr(p, '\n') + 1;  // skip committer line
-    p = strchr(p, '\n') + 1;  // skip blank line
-
-    snprintf(commit_out->message, sizeof(commit_out->message), "%s", p);
     return 0;
 }
-
 // Serialize a Commit struct to the text format.
 // Caller must free(*data_out).
 int commit_serialize(const Commit *commit, void **data_out, size_t *len_out) {
+    char *buffer = malloc(1024);
+    if (!buffer) return -1;
+
     char tree_hex[HASH_HEX_SIZE + 1];
-    char parent_hex[HASH_HEX_SIZE + 1];
     hash_to_hex(&commit->tree, tree_hex);
 
-    char buf[8192];
-    int n = 0;
-    n += snprintf(buf + n, sizeof(buf) - n, "tree %s\n", tree_hex);
+    char parent_hex[HASH_HEX_SIZE + 1];
+
+    int offset = 0;
+
+    // tree
+    offset += sprintf(buffer + offset, "tree %s\n", tree_hex);
+
+    // parent
     if (commit->has_parent) {
         hash_to_hex(&commit->parent, parent_hex);
-        n += snprintf(buf + n, sizeof(buf) - n, "parent %s\n", parent_hex);
+        offset += sprintf(buffer + offset, "parent %s\n", parent_hex);
     }
-    n += snprintf(buf + n, sizeof(buf) - n,
-                  "author %s %" PRIu64 "\n"
-                  "committer %s %" PRIu64 "\n"
-                  "\n"
-                  "%s",
-                  commit->author, commit->timestamp,
-                  commit->author, commit->timestamp,
-                  commit->message);
 
-    *data_out = malloc(n + 1);
-    if (!*data_out) return -1;
-    memcpy(*data_out, buf, n + 1);
-    *len_out = (size_t)n;
+    // author
+    offset += sprintf(buffer + offset, "author %s\n", commit->author);
+
+    // 🔥 THIS LINE WAS MISSING OR WRONG
+    offset += sprintf(buffer + offset, "time %llu\n",
+                      (unsigned long long)commit->timestamp);
+
+    // message
+    offset += sprintf(buffer + offset, "\n%s\n", commit->message);
+
+    *data_out = buffer;
+    *len_out = offset;
     return 0;
 }
-
 // Walk commit history from HEAD to the root.
 int commit_walk(commit_walk_fn callback, void *ctx) {
     ObjectID id;
@@ -193,9 +207,55 @@ int head_update(const ObjectID *new_commit) {
 //   - head_update       : moves the branch pointer to your new commit
 //
 // Returns 0 on success, -1 on error.
+
 int commit_create(const char *message, ObjectID *commit_id_out) {
-    // TODO: Implement commit creation
-    // (See Lab Appendix for logical steps)
-    (void)message; (void)commit_id_out;
-    return -1;
+    ObjectID tree_id;
+
+    // Step 1: Build tree from index
+    if (tree_from_index(&tree_id) != 0) return -1;
+
+    // Step 2: Read parent from HEAD
+    ObjectID parent_id;
+    int has_parent = (head_read(&parent_id) == 0);
+
+    // Step 3: Get author
+    const char *author = pes_author();
+
+    // Step 4: Prepare commit struct
+    Commit commit;
+    memset(&commit, 0, sizeof(Commit));
+
+    commit.tree = tree_id;
+
+    if (has_parent) {
+        commit.parent = parent_id;
+        commit.has_parent = 1;
+    } else {
+        commit.has_parent = 0;
+    }
+
+    // SAFE copy
+    snprintf(commit.author, sizeof(commit.author), "%s", author);
+    snprintf(commit.message, sizeof(commit.message), "%s", message);
+
+    // IMPORTANT: correct timestamp
+    commit.timestamp = (uint64_t)time(NULL);
+
+    // Step 5: Serialize
+    void *data;
+    size_t len;
+    if (commit_serialize(&commit, &data, &len) != 0) return -1;
+
+    // Step 6: Write object
+    if (object_write(OBJ_COMMIT, data, len, commit_id_out) != 0) {
+        free(data);
+        return -1;
+    }
+
+    free(data);
+
+    // Step 7: Update HEAD
+    if (head_update(commit_id_out) != 0) return -1;
+
+    return 0;
 }
